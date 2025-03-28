@@ -13,7 +13,7 @@ class Offer(models.Model):
     description = models.TextField()
     price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     available_quantity = models.PositiveIntegerField()
-    photo = models.ImageField(upload_to='offer_photos/', null=True, blank=True)
+    photo = models.FileField(upload_to='static/offer_photos/', null=True, blank=True)
     start_date = models.DateField()
     end_date = models.DateField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES)

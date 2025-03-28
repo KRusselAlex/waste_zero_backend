@@ -2,10 +2,10 @@ from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from drf_yasg.utils import swagger_auto_schema
 
-from permissions import CustomIsAuthenticated
+from utils.permissions import CustomIsAuthenticated
 from .serializers import UserSerializer, LoginSerializer
 from .models import User
-from utils import format_response  # Import the format_response function
+from utils.utils import format_response  # Import the format_response function
 
 class RegisterView(generics.CreateAPIView):
     """

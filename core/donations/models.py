@@ -13,7 +13,7 @@ class Donation(models.Model):
     recipient = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='donations_received')  # L'utilisateur qui reçoit le don
     title = models.CharField(max_length=255)
     description = models.TextField()
-    photo = models.ImageField(upload_to='donation_photos/', null=True, blank=True)
+    photo = models.FileField(upload_to='static/donation_photos/', null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='available')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
