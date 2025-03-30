@@ -1,17 +1,8 @@
-"""core URL Configuration
+"""
+core URL Configuration
 
 The `urlpatterns` list routes URLs to views. For more information please see:
     https://docs.djangoproject.com/en/4.1/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
 from rest_framework import permissions
@@ -22,9 +13,9 @@ from . import views
 
 schema_view = get_schema_view(
    openapi.Info(
-      title="Tax Management Api",
+      title="0Waste Api",
       default_version='v1',
-      description="API Tax management",
+      description="API 0Waste management",
       terms_of_service="https://www.google.com/policies/terms/",
       contact=openapi.Contact(email="contact@myapi.com"),
       license=openapi.License(name="BSD License"),
@@ -35,8 +26,23 @@ schema_view = get_schema_view(
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('', views.deployment_status, name='deployment_status'), 
+    path('', views.deployment_status, name='deployment_status'),
+    
+    # API v1 endpoints
     path('api/v1/', include('users.urls')),
+    path('api/v1/', include('merchants.urls')),
+    path('api/v1/', include('consumers.urls')),
+    path('api/v1/', include('donations.urls')),
+    path('api/v1/', include('orders.urls')),
+    path('api/v1/', include('notifications.urls')),
+    path('api/v1/', include('offers.urls')),
+    path('api/v1/', include('points.urls')),
+    path('api/v1/', include('reviews.urls')),
+    path('api/v1/', include('transactions.urls')),
+    path('api/v1/', include('administrators.urls')),
+    path('api/v1/', include('categories.urls')),
+    
+    # Documentation
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='swagger-docs'),
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='redoc-docs'),
 ]

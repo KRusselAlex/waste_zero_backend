@@ -1,11 +1,14 @@
 from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from drf_yasg.utils import swagger_auto_schema
-
-from utils.permissions import CustomIsAuthenticated
-from .serializers import UserSerializer, LoginSerializer
+from utils.permissions import CustomIsAuthenticated,IsSelfOrAdmin
+from .serializers import UserSerializer, LoginSerializer,VerifyEmailSerializer
 from .models import User
-from utils.utils import format_response  # Import the format_response function
+from utils.utils import format_response
+from utils.utils import send_verification_email,is_token_expired
+from django.conf import settings
+from django.core.mail import send_mail
+
 
 class RegisterView(generics.CreateAPIView):
     """
@@ -24,42 +27,124 @@ class RegisterView(generics.CreateAPIView):
         }
     )
     def post(self, request, *args, **kwargs):
-        try:
-            # Use the serializer to validate and handle errors
-            serializer = self.get_serializer(data=request.data)
-            if serializer.is_valid():
-                # If the serializer is valid, create the user
-                serializer.save()
-                return format_response(
-                    data=serializer.data,
-                    message="User created successfully",
-                    status_code=status.HTTP_201_CREATED,
-                    success=True
-                )
-            # If invalid, return the error messages directly from the serializer
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+
+            token = user.generate_verification_token()
+            
+            send_verification_email(user.email, token)
+            return format_response(
+                data=serializer.data,
+                message="User created successfully",
+                status_code=status.HTTP_201_CREATED,
+                success=True
+            )
+        
+        return format_response(
+            errors=serializer.errors,
+            message="User registration failed",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            success=False
+        )
+
+
+
+class VerifyEmailView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    @swagger_auto_schema(
+        operation_description="Verify user email with the provided token",
+        request_body=VerifyEmailSerializer,
+        responses={
+            200: "Email successfully verified",
+            400: "Invalid or expired token",
+        }
+    )
+    def post(self, request):
+        serializer = VerifyEmailSerializer(data=request.data)
+        if not serializer.is_valid():
             return format_response(
                 errors=serializer.errors,
-                message="User registration failed",
+                message="Invalid token format",
                 status_code=status.HTTP_400_BAD_REQUEST,
-                success=False  # Indicating failure
+                success=False
             )
-        except Exception as e:
-            # Log the exception if needed
-            print(f"Error during user registration: {e}")
+
+        token = serializer.validated_data['token']
+        
+        try:
+            user = User.objects.get(verification_token=token)
+            
+            if is_token_expired(user.token_created_at):
+                return format_response(
+                    errors={'token': 'Token has expired'},
+                    message="Verification token has expired. Please request a new one.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    success=False
+                )
+                
+            user.is_verified = True
+            user.verification_token = None
+            user.token_created_at = None
+            user.save()
+            
             return format_response(
-                errors="An unexpected error occurred",
-                message="User registration failed",
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                success=False  # Indicating failure
+                message="Email successfully verified",
+                status_code=status.HTTP_200_OK,
+                success=True
+            )
+            
+        except User.DoesNotExist:
+            return format_response(
+                errors={'token': 'Invalid token'},
+                message="Invalid verification token",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                success=False
             )
 
 
+class ResendVerificationEmailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description="Resend verification email",
+        responses={
+            200: "Verification email resent",
+            400: "User already verified",
+        }
+    )
+    def post(self, request):
+        if request.user.is_verified:
+            return format_response(
+                errors={'email': 'Already verified'},
+                message="Email is already verified",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                success=False
+            )
+            
+        token = request.user.generate_verification_token()
+        verification_url = f"{settings.FRONTEND_URL}/verify-email?token={token}"
+        send_mail(
+            "Verify your email",
+            f"Please click the following link to verify your email: {verification_url}",
+            settings.DEFAULT_FROM_EMAIL,
+            [request.user.email],
+            fail_silently=False,
+        )
+        
+        return format_response(
+            message="Verification email resent successfully",
+            status_code=status.HTTP_200_OK,
+            success=True
+        )
+            
 class LoginView(APIView):
     """
     Authenticate a user and return access and refresh tokens.
     """
-    
     permission_classes = [permissions.AllowAny]
+
     @swagger_auto_schema(
         operation_description="Authenticate a user using email and password.",
         request_body=LoginSerializer,
@@ -68,40 +153,23 @@ class LoginView(APIView):
             400: "Invalid credentials",
         }
     )
-    
-   
     def post(self, request):
-        try:
-            serializer = LoginSerializer(data=request.data)
-            print(request.data)
-            print(request.method)
-            if serializer.is_valid():
-                user_data = serializer.validated_data  # This will contain email, access, refresh tokens
-                return format_response(
-                    data=user_data,
-                    message="Login successful",
-                    status_code=status.HTTP_200_OK,
-                    success=True
-                )
-            
+        serializer = LoginSerializer(data=request.data)
+        if serializer.is_valid():
             return format_response(
-                errors=serializer.errors,
-                message="Login failed",
-                status_code=status.HTTP_400_BAD_REQUEST,
-                success=False  # Indicating failure
+                data=serializer.validated_data,
+                message="Login successful",
+                status_code=status.HTTP_200_OK,
+                success=True
             )
+        
+        return format_response(
+            errors=serializer.errors,
+            message="Login failed",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            success=False
+        )
 
-        except Exception as e:
-            # You could log the exception here
-            print(e)
-            return format_response(
-                errors="Database error",
-                message="Login failed",
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                success=False  # Indicating failure
-            )
-
-                
 
 class UserListView(generics.ListAPIView):
     """
@@ -110,7 +178,6 @@ class UserListView(generics.ListAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [CustomIsAuthenticated]
-    
 
     @swagger_auto_schema(
         operation_description="Retrieve a list of all users. Requires authentication.",
@@ -120,8 +187,7 @@ class UserListView(generics.ListAPIView):
         }
     )
     def get(self, request, *args, **kwargs):
-        users = self.get_queryset()
-        serializer = self.get_serializer(users, many=True)
+        serializer = self.get_serializer(self.get_queryset(), many=True)
         return format_response(
             data=serializer.data,
             message="User list retrieved successfully",
@@ -136,94 +202,66 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     queryset = User.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [CustomIsAuthenticated]
+    permission_classes = [IsSelfOrAdmin] # Use our custom permission
 
-    @swagger_auto_schema(
-        operation_description="Retrieve details of a specific user by ID. Requires authentication.",
-        responses={
-            200: UserSerializer(),
-            401: "Unauthorized",
-            404: "User not found",
-        }
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
+    def get_object(self):
+        try:
+            return super().get_object()
+        except User.DoesNotExist:
+            return None
 
     def retrieve(self, request, *args, **kwargs):
-        try:
-            response = super().retrieve(request, *args, **kwargs)
-        except:
+        instance = self.get_object()
+        if not instance:
             return format_response(
-            errors={'detail': 'Client not found'},
-            message="Client not found",
-            status_code=status.HTTP_404_NOT_FOUND,
-            success=False  # Indicating failure
-        )
-        if response.status_code == 200:
-            return format_response(
-                data=response.data,
-                message="User details retrieved",
-                status_code=status.HTTP_200_OK,
-                success=True
+                errors={'detail': 'User not found'},
+                message="User not found",
+                status_code=status.HTTP_404_NOT_FOUND,
+                success=False
             )
-       
-
-    @swagger_auto_schema(
-        operation_description="Update user details by ID. Requires authentication.",
-        request_body=UserSerializer,
-        responses={
-            200: "User updated successfully",
-            400: "Invalid input",
-            401: "Unauthorized",
-            404: "User not found",
-        }
-    )
-    def put(self, request, *args, **kwargs):
-        return super().put(request, *args, **kwargs)
+            
+        serializer = self.get_serializer(instance)
+        return format_response(
+            data=serializer.data,
+            message="User details retrieved",
+            status_code=status.HTTP_200_OK,
+            success=True
+        )
 
     def update(self, request, *args, **kwargs):
-        try:
-            response = super().update(request, *args, **kwargs)
-        except:
+        instance = self.get_object()
+        if not instance:
             return format_response(
-            errors={'detail': 'Client not found'},
-            message="Client not found",
-            status_code=status.HTTP_404_NOT_FOUND,
-            success=False  # Indicating failure
-        )
-        if response.status_code == 200:
-            return format_response(
-                data=response.data,
-                message="User updated successfully",
-                status_code=status.HTTP_200_OK,
-                success=True
+                errors={'detail': 'User not found'},
+                message="User not found",
+                status_code=status.HTTP_404_NOT_FOUND,
+                success=False
             )
-      
 
-    @swagger_auto_schema(
-        operation_description="Delete a specific user by ID. Requires authentication.",
-        responses={
-            204: "User deleted successfully",
-            401: "Unauthorized",
-            404: "User not found",
-        }
-    )
-    def delete(self, request, *args, **kwargs):
-        return super().delete(request, *args, **kwargs)
+        serializer = self.get_serializer(instance, data=request.data, partial=False)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        
+        return format_response(
+            data=serializer.data,
+            message="User updated successfully",
+            status_code=status.HTTP_200_OK,
+            success=True
+        )
 
     def destroy(self, request, *args, **kwargs):
-        try:
-            response = super().retrieve(request, *args, **kwargs)
-        except:
+        instance = self.get_object()
+        if not instance:
             return format_response(
-            errors={'detail': 'Client not found'},
-            message="Client not found",
-            status_code=status.HTTP_404_NOT_FOUND,
-            success=False  # Indicating failure
-        )
-        if response.status_code == 204:
-            return format_response(
-                message="User deleted successfully",
-                status_code=status.HTTP_204_NO_CONTENT,
-                success=True
+                errors={'detail': 'User not found'},
+                message="User not found",
+                status_code=status.HTTP_404_NOT_FOUND,
+                success=False
             )
+
+        self.perform_destroy(instance)
+        return format_response(
+            message="User deleted successfully",
+            status_code=status.HTTP_204_NO_CONTENT,
+            success=True
+        )

@@ -8,11 +8,25 @@ from rest_framework.validators import UniqueValidator
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['email', 'username', 'password']
+        fields = '__all__'
         extra_kwargs = {
-            'password': {'write_only': True},
-            'email': {'validators': [UniqueValidator(queryset=User.objects.all())]}  # Ensure email is unique
+            'password': {
+                'write_only': True,
+            },
+            'email': {
+                'validators': [UniqueValidator(queryset=User.objects.all())],
+            },  
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Make fields not required for updates
+        if self.instance is not None:
+            self.fields['username'].required = False
+            self.fields['email'].required = False
+            self.fields['role'].required = False
+            self.fields['password'].required = False
+
     def create(self, validated_data):
         password = validated_data.pop('password', None)
         user = User.objects.create(**validated_data)
@@ -20,17 +34,25 @@ class UserSerializer(serializers.ModelSerializer):
             user.set_password(password)
             user.save()
         return user
-    
+
     def update(self, instance, validated_data):
+        validated_data.pop('groups', None)
+        validated_data.pop('user_permissions', None)
         password = validated_data.pop('password', None)
+        profile_picture = validated_data.pop('profile_picture', None)
+
+        # Handle partial updates - only update provided fields
         for attr, value in validated_data.items():
-            setattr(instance, attr, value)
+            if value is not None or attr in ['profile_picture']:  # Special handling for file fields
+                setattr(instance, attr, value)
+
         if password:
-            instance.set_password(password)  # Hash the password before saving
+            instance.set_password(password)
+        if profile_picture is not None:  # Explicit None check for file fields
+            instance.profile_picture = profile_picture
+
         instance.save()
         return instance
-
-
 
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -60,3 +82,7 @@ class LoginSerializer(serializers.Serializer):
             }
 
         raise serializers.ValidationError('Incorrect credentials')
+
+
+class VerifyEmailSerializer(serializers.Serializer):
+    token = serializers.CharField(required=True)
