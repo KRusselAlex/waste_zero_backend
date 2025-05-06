@@ -2,7 +2,8 @@ from rest_framework import generics, status, filters
 from drf_yasg.utils import swagger_auto_schema
 from django.http import Http404
 from django.utils import timezone
-from utils.permissions import CustomIsAuthenticated
+from utils.permissions import CustomIsAuthenticated,IsMerchantOwnerOrAdmin
+from rest_framework.exceptions import NotAuthenticated, PermissionDenied
 from .serializers import OfferSerializer
 from .models import Offer
 from utils.utils import format_response
@@ -17,6 +18,14 @@ class OfferListCreateView(generics.ListCreateAPIView):
     filter_backends = [filters.OrderingFilter]
     ordering_fields = ['created_at', 'price', 'start_date', 'end_date']
     ordering = ['-created_at']  # Default ordering is newest first
+
+    def get_queryset(self):
+        # Admin can see all offers
+        if self.request.user.role == 'administrator' or self.request.user.is_staff:
+            return Offer.objects.all()
+        # Merchant can only see their own offers
+        return Offer.objects.filter(merchant=self.request.user)
+
 
     @swagger_auto_schema(
         operation_description="Create a new offer for a merchant.",
@@ -118,7 +127,7 @@ class OfferDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     queryset = Offer.objects.all()
     serializer_class = OfferSerializer
-    permission_classes = [CustomIsAuthenticated]
+    permission_classes = [IsMerchantOwnerOrAdmin]
 
     @swagger_auto_schema(
         operation_description="Retrieve details of a specific offer by ID.",
@@ -209,7 +218,7 @@ class OfferStatusUpdateView(generics.UpdateAPIView):
     """
     queryset = Offer.objects.all()
     serializer_class = OfferSerializer
-    permission_classes = [CustomIsAuthenticated]
+    permission_classes = [IsMerchantOwnerOrAdmin]  #
 
     @swagger_auto_schema(
         operation_description="Update an offer's status by ID.",
@@ -282,6 +291,11 @@ class MerchantOffersView(generics.ListAPIView):
     
     def get_queryset(self):
         merchant_id = self.kwargs.get('merchant_id')
+        # If user is not admin, they can only see their own offers
+        if not (self.request.user.role == 'administrator' or self.request.user.is_staff):
+            if str(self.request.user.id) != merchant_id:
+                raise PermissionDenied("You can only view your own offers")
+            return Offer.objects.filter(merchant=self.request.user)
         return Offer.objects.filter(merchant_id=merchant_id)
 
     @swagger_auto_schema(

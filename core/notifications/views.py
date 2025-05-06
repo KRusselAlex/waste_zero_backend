@@ -328,6 +328,7 @@ class MarkAllUserNotificationsReadView(generics.GenericAPIView):
     Mark all notifications for a user as read.
     """
     permission_classes = [CustomIsAuthenticated]
+    serializer_class = NotificationSerializer
     
     @swagger_auto_schema(
         operation_description="Mark all notifications for a specific user as read.",

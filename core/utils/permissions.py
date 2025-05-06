@@ -131,3 +131,52 @@ class IsOwnerOrAdmin(CustomIsAuthenticated):
         return True
 
 
+class IsMerchantOwnerOrAdmin(CustomIsAuthenticated):
+    """
+    Permission that checks if the user is an admin or the merchant who created the offer.
+    """
+    def has_object_permission(self, request, view, obj):
+        super().has_permission(request, view)
+        
+        # Admin can access any offer
+        if request.user.role == 'administrator' or request.user.is_staff:
+            return True
+            
+        # Merchant can only access their own offers
+        if hasattr(obj, 'merchant') and obj.merchant == request.user:
+            return True
+            
+        response_data = format_response(
+            message="Permission denied",
+            errors={"permission": "You can only access your own offers"},
+            status_code=status.HTTP_403_FORBIDDEN,
+            success=False
+        )
+        raise PermissionDenied(detail=response_data)
+
+
+
+
+class IsDonationOwnerOrAdmin(CustomIsAuthenticated):
+    """
+    Permission that checks if the user is an admin or involved in the donation
+    (either as donor or recipient).
+    """
+    def has_object_permission(self, request, view, obj):
+        super().has_permission(request, view)
+        
+        # Admin can access any donation
+        if request.user.role == 'administrator' or request.user.is_staff:
+            return True
+            
+        # User can access if they're the donor or recipient
+        if obj.donor == request.user or (obj.recipient and obj.recipient == request.user):
+            return True
+            
+        response_data = format_response(
+            message="Permission denied",
+            errors={"permission": "You can only access your own donations"},
+            status_code=status.HTTP_403_FORBIDDEN,
+            success=False
+        )
+        raise PermissionDenied(detail=response_data)

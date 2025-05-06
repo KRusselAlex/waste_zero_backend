@@ -1,7 +1,7 @@
 from rest_framework import generics, status
 from drf_yasg.utils import swagger_auto_schema
 from django.http import Http404
-from utils.permissions import CustomIsAuthenticated
+from utils.permissions import CustomIsAuthenticated,IsSelfOrAdmin
 from utils.utils import format_response
 from .models import Review
 from rest_framework import filters
@@ -191,7 +191,7 @@ class OrderReviewView(generics.RetrieveAPIView):
     """
     queryset = Review.objects.all()
     serializer_class = ReviewSerializer
-    permission_classes = [CustomIsAuthenticated]
+    permission_classes = [IsSelfOrAdmin]
     lookup_field = 'order_id'
 
     @swagger_auto_schema(

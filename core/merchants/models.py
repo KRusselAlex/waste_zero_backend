@@ -8,6 +8,7 @@ class Merchant(models.Model):
     business_type = models.CharField(max_length=50)
     address = models.TextField()
     description = models.TextField()
+    phone=models.TextField()
     pickup_hours = models.CharField(max_length=255)
     is_verified = models.BooleanField(default=False)  # Ajout de la vérification
     max_price_limit = models.DecimalField(max_digits=10, decimal_places=2, default=100.00)  # Prix max

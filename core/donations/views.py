@@ -1,25 +1,139 @@
+from django.db import models
+from django.http import Http404
 from rest_framework import generics, status, filters
 from drf_yasg.utils import swagger_auto_schema
-from django.http import Http404
-from utils.permissions import CustomIsAuthenticated
-from utils.utils import format_response
+from drf_yasg import openapi
+from rest_framework import permissions
 
 from .models import Donation
 from .serializers import DonationSerializer
+from utils.permissions import CustomIsAuthenticated
+from utils.utils import format_response
+from rest_framework.exceptions import NotAuthenticated, PermissionDenied
+
+
+class IsDonationOwnerOrAdmin(CustomIsAuthenticated):
+    """
+    Permission that checks if the user is an admin or involved in the donation
+    (either as donor or recipient).
+    """
+    def has_object_permission(self, request, view, obj):
+        super().has_permission(request, view)
+        
+        # Admin can access any donation
+        if request.user.role == 'administrator' or request.user.is_staff:
+            return True
+            
+        # User can access if they're the donor or recipient
+        if obj.donor == request.user or (obj.recipient and obj.recipient == request.user):
+            return True
+            
+        response_data = format_response(
+            message="Permission denied",
+            errors={"permission": "You can only access your own donations"},
+            status_code=status.HTTP_403_FORBIDDEN,
+            success=False
+        )
+        raise PermissionDenied(detail=response_data)
+
+
+class AllDonationsListView(generics.ListAPIView):
+    """
+    Retrieve all donations (visible to all authenticated users).
+    """
+    serializer_class = DonationSerializer
+    permission_classes = [CustomIsAuthenticated]
+    filter_backends = [filters.OrderingFilter, filters.SearchFilter]
+    ordering_fields = ['created_at', 'status', 'title']
+    ordering = ['-created_at']
+    search_fields = ['title', 'description']
+
+    def get_queryset(self):
+        queryset = Donation.objects.all()
+        
+        # Apply filters if provided in query params
+        status_filter = self.request.query_params.get('status', None)
+        donor_id = self.request.query_params.get('donor_id', None)
+        recipient_id = self.request.query_params.get('recipient_id', None)
+        
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        if donor_id:
+            queryset = queryset.filter(donor_id=donor_id)
+        if recipient_id:
+            queryset = queryset.filter(recipient_id=recipient_id)
+            
+        return queryset
+
+    @swagger_auto_schema(
+        operation_description="Retrieve all donations (visible to all authenticated users).",
+        responses={
+            200: DonationSerializer(many=True),
+            401: "Unauthorized",
+        },
+        manual_parameters=[
+            openapi.Parameter(
+                'status',
+                openapi.IN_QUERY,
+                description="Filter by donation status",
+                type=openapi.TYPE_STRING,
+                enum=[status[0] for status in Donation.STATUS_CHOICES]
+            ),
+            openapi.Parameter(
+                'donor_id',
+                openapi.IN_QUERY,
+                description="Filter by donor ID",
+                type=openapi.TYPE_STRING
+            ),
+            openapi.Parameter(
+                'recipient_id',
+                openapi.IN_QUERY,
+                description="Filter by recipient ID",
+                type=openapi.TYPE_STRING
+            ),
+        ]
+    )
+    def get(self, request, *args, **kwargs):
+        try:
+            queryset = self.filter_queryset(self.get_queryset())
+            serializer = self.get_serializer(queryset, many=True)
+            
+            return format_response(
+                data=serializer.data,
+                message="All donations retrieved successfully",
+                status_code=status.HTTP_200_OK,
+                success=True
+            )
+        except Exception as e:
+            return format_response(
+                errors=str(e),
+                message="An error occurred while retrieving donations",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                success=False
+            )
 
 
 class DonationListCreateView(generics.ListCreateAPIView):
     """
     List all donations or create a new donation.
+    (Shows only user's own donations unless admin)
     """
     serializer_class = DonationSerializer
     permission_classes = [CustomIsAuthenticated]
     filter_backends = [filters.OrderingFilter]
     ordering_fields = ['created_at', 'status', 'title']
-    ordering = ['-created_at']  # Default ordering is newest first
+    ordering = ['-created_at']
 
     def get_queryset(self):
-        return Donation.objects.all()
+        # Admin can see all donations
+        if self.request.user.role == 'administrator' or self.request.user.is_staff:
+            return Donation.objects.all()
+        
+        # Regular users can only see donations they made or received
+        return Donation.objects.filter(
+            models.Q(donor=self.request.user) | 
+            models.Q(recipient=self.request.user)
+        )
 
     @swagger_auto_schema(
         operation_description="Create a new donation.",
@@ -32,11 +146,11 @@ class DonationListCreateView(generics.ListCreateAPIView):
     )
     def post(self, request, *args, **kwargs):
         try:
-            multiple = isinstance(request.data, list)  # Check if the request contains a list
-            serializer = DonationSerializer(data=request.data, many=multiple)
+            serializer = DonationSerializer(data=request.data)
 
             if serializer.is_valid():
-                serializer.save()
+                # Automatically set the donor to the current user
+                serializer.save(donor=request.user)
                 return format_response(
                     data=serializer.data,
                     message="Donation created successfully",
@@ -57,50 +171,6 @@ class DonationListCreateView(generics.ListCreateAPIView):
                 errors=str(e)
             )
 
-    @swagger_auto_schema(
-        operation_description="Retrieve a list of all donations with optional filtering.",
-        responses={
-            200: DonationSerializer(many=True),
-            401: "Unauthorized",
-        }
-    )
-    def get(self, request, *args, **kwargs):
-        try:
-            # Get query parameters for filtering
-            donor_id = request.query_params.get('donor', None)
-            recipient_id = request.query_params.get('recipient', None)
-            status_filter = request.query_params.get('status', None)
-            
-            # Apply filters if provided
-            queryset = self.get_queryset()
-            
-            if donor_id:
-                queryset = queryset.filter(donor_id=donor_id)
-                
-            if recipient_id:
-                queryset = queryset.filter(recipient_id=recipient_id)
-            
-            if status_filter:
-                queryset = queryset.filter(status=status_filter)
-                
-            # Apply ordering from filter_backends
-            queryset = self.filter_queryset(queryset)
-            
-            serializer = self.get_serializer(queryset, many=True)
-            return format_response(
-                data=serializer.data,
-                message="Donations retrieved successfully",
-                status_code=status.HTTP_200_OK,
-                success=True
-            )
-        except Exception as e:
-            return format_response(
-                message="An error occurred while retrieving donations.",
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                success=False,
-                errors=str(e)
-            )
-
 
 class DonationDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
@@ -108,33 +178,32 @@ class DonationDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     queryset = Donation.objects.all()
     serializer_class = DonationSerializer
-    permission_classes = [CustomIsAuthenticated]
+    permission_classes = [IsDonationOwnerOrAdmin]
 
     @swagger_auto_schema(
         operation_description="Retrieve details of a specific donation by ID.",
         responses={
             200: DonationSerializer(),
             401: "Unauthorized",
+            403: "Forbidden",
             404: "Donation not found",
         }
     )
     def retrieve(self, request, *args, **kwargs):
         try:
             response = super().retrieve(request, *args, **kwargs)
+            return format_response(
+                data=response.data,
+                message="Donation details retrieved",
+                status_code=status.HTTP_200_OK,
+                success=True
+            )
         except Http404:
             return format_response(
                 errors={'detail': 'Donation not found'},
                 message="Donation not found",
                 status_code=status.HTTP_404_NOT_FOUND,
                 success=False
-            )
-        
-        if response.status_code == 200:
-            return format_response(
-                data=response.data,
-                message="Donation details retrieved",
-                status_code=status.HTTP_200_OK,
-                success=True
             )
 
     @swagger_auto_schema(
@@ -144,26 +213,25 @@ class DonationDetailView(generics.RetrieveUpdateDestroyAPIView):
             200: "Donation updated successfully",
             400: "Invalid input",
             401: "Unauthorized",
+            403: "Forbidden",
             404: "Donation not found",
         }
     )
     def update(self, request, *args, **kwargs):
         try:
             response = super().update(request, *args, **kwargs)
-        except Exception as error:
-            return format_response(
-                errors={'detail': str(error)},
-                message="There is an error",
-                status_code=status.HTTP_404_NOT_FOUND,
-                success=False
-            )
-        
-        if response.status_code == 200:
             return format_response(
                 data=response.data,
                 message="Donation updated successfully",
                 status_code=status.HTTP_200_OK,
                 success=True
+            )
+        except Exception as error:
+            return format_response(
+                errors={'detail': str(error)},
+                message="There is an error",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                success=False
             )
 
     @swagger_auto_schema(
@@ -171,19 +239,18 @@ class DonationDetailView(generics.RetrieveUpdateDestroyAPIView):
         responses={
             204: "Donation deleted successfully",
             401: "Unauthorized",
+            403: "Forbidden",
             404: "Donation not found",
         }
     )
     def destroy(self, request, *args, **kwargs):
         try:
-            response = super().destroy(request, *args, **kwargs)
-            
-            if response.status_code == 204:
-                return format_response(
-                    message="Donation deleted successfully",
-                    status_code=status.HTTP_204_NO_CONTENT,
-                    success=True
-                )
+            super().destroy(request, *args, **kwargs)
+            return format_response(
+                message="Donation deleted successfully",
+                status_code=status.HTTP_204_NO_CONTENT,
+                success=True
+            )
         except Exception as e:
             return format_response(
                 errors=str(e),
@@ -199,7 +266,7 @@ class DonationStatusUpdateView(generics.UpdateAPIView):
     """
     queryset = Donation.objects.all()
     serializer_class = DonationSerializer
-    permission_classes = [CustomIsAuthenticated]
+    permission_classes = [IsDonationOwnerOrAdmin]
 
     @swagger_auto_schema(
         operation_description="Update a donation's status by ID.",
@@ -207,6 +274,7 @@ class DonationStatusUpdateView(generics.UpdateAPIView):
             200: "Donation status updated successfully",
             400: "Invalid input",
             401: "Unauthorized",
+            403: "Forbidden",
             404: "Donation not found",
         }
     )
@@ -224,7 +292,7 @@ class DonationStatusUpdateView(generics.UpdateAPIView):
             
             # Check if status is valid
             status_value = request.data['status']
-            valid_statuses = [status for status, _ in Donation.STATUS_CHOICES]
+            valid_statuses = [status[0] for status in Donation.STATUS_CHOICES]
             
             if status_value not in valid_statuses:
                 return format_response(
@@ -277,6 +345,12 @@ class UserDonationsMadeView(generics.ListAPIView):
     
     def get_queryset(self):
         donor_id = self.kwargs.get('donor_id')
+        
+        # If user is not admin, they can only see their own donations
+        if not (self.request.user.role == 'administrator' or self.request.user.is_staff):
+            if str(self.request.user.id) != donor_id:
+                raise PermissionDenied("You can only view your own donations")
+        
         return Donation.objects.filter(donor_id=donor_id)
 
     @swagger_auto_schema(
@@ -284,6 +358,7 @@ class UserDonationsMadeView(generics.ListAPIView):
         responses={
             200: DonationSerializer(many=True),
             401: "Unauthorized",
+            403: "Forbidden",
             404: "User not found or has no donations",
         }
     )
@@ -323,70 +398,12 @@ class UserDonationsMadeView(generics.ListAPIView):
             )
 
 
-class UserDonationsReceivedView(generics.ListAPIView):
-    """
-    Retrieve all donations received by a specific user.
-    """
-    serializer_class = DonationSerializer
-    permission_classes = [CustomIsAuthenticated]
-    filter_backends = [filters.OrderingFilter]
-    ordering_fields = ['created_at', 'status', 'title']
-    ordering = ['-created_at']
-    
-    def get_queryset(self):
-        recipient_id = self.kwargs.get('recipient_id')
-        return Donation.objects.filter(recipient_id=recipient_id)
-
-    @swagger_auto_schema(
-        operation_description="Retrieve all donations received by a specific user ID.",
-        responses={
-            200: DonationSerializer(many=True),
-            401: "Unauthorized",
-            404: "User not found or has received no donations",
-        }
-    )
-    def get(self, request, *args, **kwargs):
-        try:
-            queryset = self.get_queryset()
-            
-            if not queryset.exists():
-                return format_response(
-                    data=[],
-                    message="No donations received by this user",
-                    status_code=status.HTTP_200_OK,
-                    success=True
-                )
-                
-            # Apply optional status filter if provided
-            status_filter = request.query_params.get('status', None)
-            if status_filter:
-                queryset = queryset.filter(status=status_filter)
-                
-            # Apply ordering
-            queryset = self.filter_queryset(queryset)
-                
-            serializer = self.get_serializer(queryset, many=True)
-            return format_response(
-                data=serializer.data,
-                message="User received donations retrieved successfully",
-                status_code=status.HTTP_200_OK,
-                success=True
-            )
-        except Exception as e:
-            return format_response(
-                errors=str(e),
-                message="An error occurred",
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                success=False
-            )
-
-
 class AvailableDonationsView(generics.ListAPIView):
     """
     Retrieve all currently available donations.
     """
     serializer_class = DonationSerializer
-    permission_classes = [CustomIsAuthenticated]
+    permission_classes = [permissions.AllowAny]  # Allow anyone to view available donations
     filter_backends = [filters.OrderingFilter]
     ordering_fields = ['created_at', 'title']
     ordering = ['-created_at']
@@ -398,21 +415,11 @@ class AvailableDonationsView(generics.ListAPIView):
         operation_description="Retrieve all currently available donations.",
         responses={
             200: DonationSerializer(many=True),
-            401: "Unauthorized",
         }
     )
     def get(self, request, *args, **kwargs):
         try:
-            queryset = self.get_queryset()
-            
-            # Apply donor filter if provided
-            donor_id = request.query_params.get('donor', None)
-            if donor_id:
-                queryset = queryset.filter(donor_id=donor_id)
-                
-            # Apply ordering
-            queryset = self.filter_queryset(queryset)
-                
+            queryset = self.filter_queryset(self.get_queryset())
             serializer = self.get_serializer(queryset, many=True)
             return format_response(
                 data=serializer.data,
@@ -443,12 +450,22 @@ class ReserveDonationView(generics.UpdateAPIView):
             200: "Donation reserved successfully",
             400: "Invalid request or donation not available",
             401: "Unauthorized",
+            403: "Forbidden",
             404: "Donation not found",
         }
     )
     def patch(self, request, *args, **kwargs):
         try:
             donation = self.get_object()
+            
+            # Check if the requesting user is the one trying to reserve
+            if 'recipient' in request.data and str(request.user.id) != request.data['recipient']:
+                return format_response(
+                    errors={'recipient': 'You can only reserve donations for yourself'},
+                    message="Permission denied",
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    success=False
+                )
             
             if donation.status != 'available':
                 return format_response(
